@@ -1,0 +1,233 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// 1. TERMINAL & RBAC ACCESS CONTROL
+// ==========================================
+
+enum UserRole {
+  ADMIN
+  APPROVER
+  STAFF
+}
+
+model Terminal {
+  id        String   @id @default(cuid())
+  code      String   @unique // e.g., "MANDAUE-01"
+  name      String   // e.g., "Mandaue Terminal"
+  location  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users             User[]
+  dispatches        DispatchRecord[]
+  governmentPermits GovernmentPermit[]
+  maintenanceAssets MaintenanceAsset[]
+  emailRules        EmailRoutingRule[]
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         UserRole  @default(STAFF)
+  isActive     Boolean   @default(true)
+  terminalId   String?
+  terminal     Terminal? @relation(fields: [terminalId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  approvedDispatches DispatchRecord[]   @relation("DispatchApprover")
+  inspectionLogs     MaintenanceLog[]
+  permitUpdates      GovernmentPermit[]
+}
+
+// ==========================================
+// 2. DISPATCHER CENTER & TRIP PERMITS
+// ==========================================
+
+enum DispatchPermitStatus {
+  PENDING
+  APPROVED
+  EMAILED
+  REJECTED
+}
+
+model DispatchRecord {
+  id              String               @id @default(cuid())
+  terminalId      String
+  terminal        Terminal             @relation(fields: [terminalId], references: [id])
+  sourcePlant     String
+  truck           String
+  priority        String               @default("NORMAL")
+  orderNumber     String
+  shipToNumber    String
+  destinationName String
+  receivingWindow String
+  incident        String?
+  salesRoute      String
+  permitStatus    DispatchPermitStatus @default(PENDING)
+  approvedById    String?
+  approvedBy      User?                @relation("DispatchApprover", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  lastEmailedAt   DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@unique([orderNumber, truck])
+  @@index([terminalId, permitStatus])
+  @@index([truck])
+}
+
+// ==========================================
+// 3. PERMITS -> GOVT (AIR, WATER, HAZWASTE, BIR, PTO, BUSINESS)
+// ==========================================
+
+enum GovtPermitCategory {
+  AIR
+  WATER
+  HAZWASTE
+  BIR
+  PTO
+  BUSINESS
+}
+
+enum ComplianceStatus {
+  ACTIVE
+  EXPIRING_SOON
+  EXPIRED
+}
+
+model GovernmentPermit {
+  id               String             @id @default(cuid())
+  terminalId       String
+  terminal         Terminal           @relation(fields: [terminalId], references: [id])
+  category         GovtPermitCategory
+  permitNumber     String
+  permitName       String
+  issuingAgency    String?
+  issueDate        DateTime
+  expiryDate       DateTime
+  reminderLeadDays Int                @default(30)
+  status           ComplianceStatus   @default(ACTIVE)
+  documentPath     String?
+  remarks          String?
+  lastReminderSent DateTime?
+  updatedById      String?
+  updatedBy        User?              @relation(fields: [updatedById], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([terminalId, category])
+  @@index([expiryDate, status])
+}
+
+// ==========================================
+// 4. MAINTENANCE -> TANKS, VALVE -> PRESSURE GAUGE, OTHERS
+// ==========================================
+
+enum MaintenanceCategory {
+  TANKS
+  VALVE
+  PRESSURE_GAUGE
+  OTHERS
+}
+
+enum AssetCondition {
+  NORMAL
+  WARNING
+  CRITICAL
+  UNDER_MAINTENANCE
+}
+
+model MaintenanceAsset {
+  id              String              @id @default(cuid())
+  terminalId      String
+  terminal        Terminal            @relation(fields: [terminalId], references: [id])
+  category        MaintenanceCategory
+  assetCode       String
+  name            String
+  locationNote    String?
+
+  parentAssetId   String?
+  parentAsset     MaintenanceAsset?   @relation("AssetHierarchy", fields: [parentAssetId], references: [id])
+  childAssets     MaintenanceAsset[]  @relation("AssetHierarchy")
+
+  unit            String?             @default("PSI")
+  minThreshold    Float?
+  maxThreshold    Float?
+  latestReading   Float?
+  calibrationDue  DateTime?
+  nextServiceDate DateTime?
+  condition       AssetCondition      @default(NORMAL)
+
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  logs            MaintenanceLog[]
+
+  @@unique([terminalId, assetCode])
+  @@index([terminalId, category, condition])
+}
+
+model MaintenanceLog {
+  id             String           @id @default(cuid())
+  assetId        String
+  asset          MaintenanceAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  readingValue   Float?
+  temperatureC   Float?
+  condition      AssetCondition   @default(NORMAL)
+  findings       String?
+  actionTaken    String?
+  alertTriggered Boolean          @default(false)
+  recordedById   String
+  recordedBy     User             @relation(fields: [recordedById], references: [id])
+  recordedAt     DateTime         @default(now())
+
+  @@index([assetId, recordedAt])
+}
+
+// ==========================================
+// 5. AUTOMATED EMAIL ROUTING & AUDIT LOGS
+// ==========================================
+
+enum AutomationModule {
+  DISPATCH_PERMIT
+  GOVT_PERMIT_EXPIRY
+  TANK_AND_GAUGE_ALERT
+  MAINTENANCE_DUE
+}
+
+model EmailRoutingRule {
+  id           String           @id @default(cuid())
+  terminalId   String
+  terminal     Terminal         @relation(fields: [terminalId], references: [id])
+  module       AutomationModule
+  filterKey    String?
+  toRecipients String
+  ccRecipients String?
+  isActive     Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model EmailLog {
+  id           String           @id @default(cuid())
+  module       AutomationModule
+  referenceId  String?
+  recipients   String
+  subject      String
+  status       String
+  errorMessage String?
+  sentAt       DateTime         @default(now())
+
+  @@index([module, sentAt])
+}

@@ -16,18 +16,22 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [user, isLoading, router]);
 
-  if (isLoading || !user) {
+  if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm">
-        Loading session...
+        Loading terminal session...
       </div>
     );
   }
 
+  if (!user) {
+    return null;
+  }
+
   return (
-    <div className="flex min-h-screen bg-slate-950">
+    <div className="flex min-h-screen bg-slate-950 text-slate-100">
       <Sidebar />
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         <Topbar />
         <main className="flex-1 p-6 overflow-x-auto">{children}</main>
       </div>
