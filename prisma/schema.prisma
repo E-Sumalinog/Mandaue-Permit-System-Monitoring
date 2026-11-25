@@ -48,6 +48,8 @@ model User {
   approvedDispatches DispatchRecord[]   @relation("DispatchApprover")
   inspectionLogs     MaintenanceLog[]
   permitUpdates      GovernmentPermit[]
+  createdDispatches  DispatchRecord[]   @relation("DispatchCreator")
+  updatedDispatches  DispatchRecord[]   @relation("DispatchUpdater")
 }
 
 // ==========================================
@@ -85,6 +87,10 @@ model DispatchRecord {
   @@unique([orderNumber, truck])
   @@index([terminalId, permitStatus])
   @@index([truck])
+  createdById     String?
+  createdBy       User?                @relation("DispatchCreator", fields: [createdById], references: [id])
+  updatedById     String?
+  updatedBy       User?                @relation("DispatchUpdater", fields: [updatedById], references: [id])
 }
 
 // ==========================================
