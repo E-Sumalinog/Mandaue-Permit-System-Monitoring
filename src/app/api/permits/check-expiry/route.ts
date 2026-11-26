@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import { prisma } from "@/lib/prisma";
 import { getServerSession } from "@/lib/auth";
 import { ComplianceStatus, AutomationModule } from "@/generated/prisma/client";
+import { renderPermitExpiryEmail } from "@/lib/email-templates/permit-expiry";
 
 function createGmailTransporter() {
   const user = process.env.GMAIL_USER?.trim();
@@ -101,6 +102,19 @@ export async function POST() {
         continue;
       }
 
+      const rendered = renderPermitExpiryEmail({
+        permitName: permit.permitName,
+        permitNumber: permit.permitNumber,
+        category: permit.category,
+        issuingAgency: permit.issuingAgency,
+        terminalName: permit.terminal?.name ?? permit.terminalId,
+        issueDate: permit.issueDate,
+        expiryDate: permit.expiryDate,
+        daysUntilExpiry,
+        reminderLeadDays: permit.reminderLeadDays,
+        remarks: permit.remarks,
+      });
+
       const recipients = resolveRecipients(
         permit.id,
         permit.category,
@@ -108,15 +122,13 @@ export async function POST() {
         rules
       );
 
-      const subject = `[Permit Expiry Alert] ${permit.category} - ${permit.permitName} (${permit.permitNumber})`;
-
       if (recipients.length === 0) {
         await prisma.emailLog.create({
           data: {
             module: AutomationModule.GOVT_PERMIT_EXPIRY,
             referenceId: permit.id,
             recipients: "UNCONFIGURED",
-            subject,
+            subject: rendered.subject,
             status: "SKIPPED",
             errorMessage: "No active recipient email rule found for this permit.",
           },
@@ -131,7 +143,7 @@ export async function POST() {
             module: AutomationModule.GOVT_PERMIT_EXPIRY,
             referenceId: permit.id,
             recipients: recipients.join(", "),
-            subject,
+            subject: rendered.subject,
             status: "FAILED",
             errorMessage: "GMAIL_USER or GMAIL_APP_PASSWORD is missing in .env.local.",
           },
@@ -139,29 +151,13 @@ export async function POST() {
         continue;
       }
 
-      const expiryLabel = permit.expiryDate.toISOString().slice(0, 10);
-      const timingNote =
-        daysUntilExpiry < 0
-          ? `Expired ${Math.abs(daysUntilExpiry)} day(s) ago`
-          : `${daysUntilExpiry} day(s) remaining`;
-
-      const textBody = [
-        "Government Permit Expiry Reminder",
-        "--------------------------------",
-        `Permit Name: ${permit.permitName}`,
-        `Permit Number: ${permit.permitNumber}`,
-        `Category: ${permit.category}`,
-        `Terminal: ${permit.terminal?.name ?? permit.terminalId}`,
-        `Expiry Date: ${expiryLabel} (${timingNote})`,
-        `Reminder Lead Window: ${permit.reminderLeadDays} day(s) before expiry`,
-      ].join("\n");
-
       try {
         await transporter.sendMail({
-          from: `"Permit Expiry Monitor" <${process.env.GMAIL_USER}>`,
+          from: `"Ops & Permit Hub" <${process.env.GMAIL_USER}>`,
           to: recipients.join(", "),
-          subject,
-          text: textBody,
+          subject: rendered.subject,
+          text: rendered.text,
+          html: rendered.html,
         });
 
         await prisma.emailLog.create({
@@ -169,7 +165,7 @@ export async function POST() {
             module: AutomationModule.GOVT_PERMIT_EXPIRY,
             referenceId: permit.id,
             recipients: recipients.join(", "),
-            subject,
+            subject: rendered.subject,
             status: "SENT",
             errorMessage: null,
           },
@@ -196,7 +192,7 @@ export async function POST() {
             module: AutomationModule.GOVT_PERMIT_EXPIRY,
             referenceId: permit.id,
             recipients: recipients.join(", "),
-            subject,
+            subject: rendered.subject,
             status: "FAILED",
             errorMessage: errMsg,
           },
