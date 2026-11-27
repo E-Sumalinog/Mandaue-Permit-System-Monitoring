@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import EmailRoutingRulesPanel from "@/components/EmailRoutingRulesPanel";
 
 type GovtPermitCategory =
   | "AIR"
@@ -12,6 +13,8 @@ type GovtPermitCategory =
 
 type ComplianceStatus = "ACTIVE" | "EXPIRING_SOON" | "EXPIRED";
 
+type ActiveTab = "PERMITS" | "ROUTING_RULES" | "EMAIL_LOGS";
+
 interface TerminalRef {
   id: string;
   code: string;
@@ -22,6 +25,8 @@ interface UserRef {
   id: string;
   name: string;
   email: string;
+  role?: string;
+  terminalId?: string | null;
 }
 
 interface GovernmentPermitRecord {
@@ -121,10 +126,14 @@ const EMPTY_FORM: PermitFormState = {
 };
 
 export default function GovernmentPermitsPage() {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("PERMITS");
+
   const [permits, setPermits] = useState<GovernmentPermitRecord[]>([]);
   const [routingRules, setRoutingRules] = useState<EmailRoutingRuleRecord[]>([]);
   const [emailLogs, setEmailLogs] = useState<EmailLogRecord[]>([]);
   const [terminals, setTerminals] = useState<TerminalRef[]>([]);
+  const [currentUserRole, setCurrentUserRole] = useState<string>("ADMIN");
+  const [activeTerminalId, setActiveTerminalId] = useState<string>("ALL");
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -144,9 +153,10 @@ export default function GovernmentPermitsPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [permitsRes, terminalsRes] = await Promise.all([
+      const [permitsRes, terminalsRes, sessionRes] = await Promise.all([
         fetch("/api/permits", { cache: "no-store" }),
         fetch("/api/terminals", { cache: "no-store" }),
+        fetch("/api/auth/session", { cache: "no-store" }).catch(() => null),
       ]);
 
       const permitsData = await permitsRes.json().catch(() => ({}));
@@ -154,7 +164,12 @@ export default function GovernmentPermitsPage() {
         throw new Error(permitsData.error || "Failed to load permits.");
       }
 
-      setPermits(Array.isArray(permitsData.permits) ? permitsData.permits : []);
+      const loadedPermits: GovernmentPermitRecord[] = Array.isArray(
+        permitsData.permits
+      )
+        ? permitsData.permits
+        : [];
+      setPermits(loadedPermits);
       setRoutingRules(
         Array.isArray(permitsData.routingRules) ? permitsData.routingRules : []
       );
@@ -162,11 +177,42 @@ export default function GovernmentPermitsPage() {
         Array.isArray(permitsData.emailLogs) ? permitsData.emailLogs : []
       );
 
+      let loadedTerminals: TerminalRef[] = [];
       if (terminalsRes.ok) {
         const termData = await terminalsRes.json().catch(() => ({}));
-        setTerminals(
-          Array.isArray(termData.terminals) ? termData.terminals : []
-        );
+        loadedTerminals = Array.isArray(termData.terminals)
+          ? termData.terminals
+          : [];
+        setTerminals(loadedTerminals);
+      }
+
+      if (sessionRes && sessionRes.ok) {
+        const sessionData = await sessionRes.json().catch(() => ({}));
+        const role =
+          sessionData?.user?.role ||
+          sessionData?.session?.role ||
+          sessionData?.role;
+        if (typeof role === "string" && role.trim()) {
+          setCurrentUserRole(role.trim().toUpperCase());
+        }
+
+        const termId =
+          sessionData?.user?.terminalId ||
+          sessionData?.session?.terminalId ||
+          sessionData?.terminalId;
+        if (typeof termId === "string" && termId.trim()) {
+          setActiveTerminalId(termId.trim());
+        } else if (loadedPermits[0]?.terminalId) {
+          setActiveTerminalId(loadedPermits[0].terminalId);
+        } else if (loadedTerminals[0]?.id) {
+          setActiveTerminalId(loadedTerminals[0].id);
+        }
+      } else {
+        if (loadedPermits[0]?.terminalId) {
+          setActiveTerminalId(loadedPermits[0].terminalId);
+        } else if (loadedTerminals[0]?.id) {
+          setActiveTerminalId(loadedTerminals[0].id);
+        }
       }
     } catch (err) {
       setErrorMsg(
@@ -227,7 +273,10 @@ export default function GovernmentPermitsPage() {
     setSuccessMsg(null);
     setForm({
       ...EMPTY_FORM,
-      terminalId: terminals[0]?.id ?? "",
+      terminalId:
+        activeTerminalId !== "ALL"
+          ? activeTerminalId
+          : terminals[0]?.id ?? "",
     });
     setIsModalOpen(true);
   };
@@ -255,6 +304,7 @@ export default function GovernmentPermitsPage() {
       setIsModalOpen(false);
       setForm(EMPTY_FORM);
       await loadPermitsData();
+      setActiveTab("PERMITS");
       setSuccessMsg(
         `Saved permit ${data.permit?.permitNumber ?? ""} with per-permit alert settings.`
       );
@@ -280,9 +330,13 @@ export default function GovernmentPermitsPage() {
       }
 
       await loadPermitsData();
+      const count = data.notifiedCount ?? 0;
       setSuccessMsg(
-        `Expiry check completed: ${data.notifiedCount ?? 0} reminder(s) processed.`
+        `Expiry check completed: ${count} reminder(s) processed.`
       );
+      if (count > 0) {
+        setActiveTab("EMAIL_LOGS");
+      }
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : "Expiry check failed."
@@ -293,7 +347,7 @@ export default function GovernmentPermitsPage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-[1440px] space-y-6 p-4 sm:p-6 text-slate-100">
+    <div className="mx-auto w-full max-w-[1440px] space-y-6 p-4 text-slate-100 sm:p-6">
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -301,7 +355,7 @@ export default function GovernmentPermitsPage() {
             Government Permits &amp; Pre-Expiry Alerts
           </h1>
           <p className="mt-0.5 text-xs text-slate-400 sm:text-sm">
-            Permit Lifecycle, Per-Permit Email Recipients &amp; Automated Expiry Reminders
+            Permit Lifecycle, Recipient Routing Rules &amp; Automated Expiry Audit Logs
           </p>
         </div>
 
@@ -349,7 +403,18 @@ export default function GovernmentPermitsPage() {
       )}
       {successMsg && (
         <div className="flex items-center justify-between rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
-          <span>{successMsg}</span>
+          <div className="flex flex-wrap items-center gap-3">
+            <span>{successMsg}</span>
+            {activeTab !== "EMAIL_LOGS" && (
+              <button
+                type="button"
+                onClick={() => setActiveTab("EMAIL_LOGS")}
+                className="rounded border border-emerald-400/40 bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-100 hover:bg-emerald-500/30"
+              >
+                View Email Logs →
+              </button>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => setSuccessMsg(null)}
@@ -394,185 +459,296 @@ export default function GovernmentPermitsPage() {
         </div>
       </div>
 
-      {/* Permits Table */}
-      <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search permit #, name, agency, recipient email..."
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none sm:w-72"
-          />
+      {/* Segmented Navigation Tabs */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
+        <button
+          type="button"
+          onClick={() => setActiveTab("PERMITS")}
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-medium transition sm:text-sm ${
+            activeTab === "PERMITS"
+              ? "bg-blue-600 text-white shadow-sm"
+              : "border border-slate-800 bg-slate-900/70 text-slate-300 hover:bg-slate-800 hover:text-white"
+          }`}
+        >
+          <span>Government Permits</span>
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              activeTab === "PERMITS"
+                ? "bg-blue-500/60 text-white"
+                : "bg-slate-800 text-slate-300"
+            }`}
+          >
+            {permits.length}
+          </span>
+        </button>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 sm:text-sm"
-            >
-              <option value="ALL">All Categories</option>
-              {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
+        <button
+          type="button"
+          onClick={() => setActiveTab("ROUTING_RULES")}
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-medium transition sm:text-sm ${
+            activeTab === "ROUTING_RULES"
+              ? "bg-blue-600 text-white shadow-sm"
+              : "border border-slate-800 bg-slate-900/70 text-slate-300 hover:bg-slate-800 hover:text-white"
+          }`}
+        >
+          <span>Email Routing Rules</span>
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              activeTab === "ROUTING_RULES"
+                ? "bg-blue-500/60 text-white"
+                : "bg-slate-800 text-slate-300"
+            }`}
+          >
+            {routingRules.length}
+          </span>
+        </button>
 
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 sm:text-sm"
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="ACTIVE">ACTIVE</option>
-              <option value="EXPIRING_SOON">EXPIRING_SOON</option>
-              <option value="EXPIRED">EXPIRED</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full divide-y divide-slate-800 text-left text-sm">
-            <thead className="bg-slate-950/75 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              <tr>
-                <th className="px-3.5 py-3">Permit</th>
-                <th className="px-3.5 py-3">Category</th>
-                <th className="px-3.5 py-3">Expiry &amp; Lead Days</th>
-                <th className="px-3.5 py-3">Recipient Email(s)</th>
-                <th className="px-3.5 py-3">Status</th>
-                <th className="px-3.5 py-3">Last Reminder</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/80 bg-slate-900/30">
-              {loading ? (
-                <tr>
-                  <td
-                    colSpan={6}
-                    className="px-4 py-8 text-center text-slate-400"
-                  >
-                    Loading government permits...
-                  </td>
-                </tr>
-              ) : filteredPermits.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={6}
-                    className="px-4 py-8 text-center text-slate-400"
-                  >
-                    No government permits found. Click &ldquo;+ Add Permit&rdquo; to create one.
-                  </td>
-                </tr>
-              ) : (
-                filteredPermits.map((p) => {
-                  const daysLeft = getDaysRemaining(p.expiryDate);
-                  const recipient =
-                    recipientByPermitId.get(p.id) || "Category/Terminal Rule";
-                  return (
-                    <tr key={p.id} className="hover:bg-slate-800/40">
-                      <td className="px-3.5 py-3">
-                        <div className="font-semibold text-white">
-                          {p.permitName}
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          {p.permitNumber}
-                          {p.issuingAgency ? ` • ${p.issuingAgency}` : ""}
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap px-3.5 py-3">
-                        <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-200">
-                          {p.category}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-3.5 py-3 text-xs">
-                        <div className="text-slate-200">
-                          {toDateInputValue(p.expiryDate)} ({daysLeft}d)
-                        </div>
-                        <div className="text-slate-400">
-                          Alert {p.reminderLeadDays}d before expiry
-                        </div>
-                      </td>
-                      <td className="px-3.5 py-3 text-xs text-slate-200">
-                        {recipient}
-                      </td>
-                      <td className="whitespace-nowrap px-3.5 py-3">
-                        <span
-                          className={`inline-flex rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
-                            STATUS_BADGES[p.status]
-                          }`}
-                        >
-                          {p.status}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-3.5 py-3 text-xs text-slate-400">
-                        {p.lastReminderSent
-                          ? new Date(p.lastReminderSent).toLocaleString()
-                          : "Not sent yet"}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+        <button
+          type="button"
+          onClick={() => setActiveTab("EMAIL_LOGS")}
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-medium transition sm:text-sm ${
+            activeTab === "EMAIL_LOGS"
+              ? "bg-blue-600 text-white shadow-sm"
+              : "border border-slate-800 bg-slate-900/70 text-slate-300 hover:bg-slate-800 hover:text-white"
+          }`}
+        >
+          <span>Pre-Expiry Email Logs</span>
+          <span
+            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+              activeTab === "EMAIL_LOGS"
+                ? "bg-blue-500/60 text-white"
+                : "bg-slate-800 text-slate-300"
+            }`}
+          >
+            {emailLogs.length}
+          </span>
+        </button>
       </div>
 
-      {/* Recent Expiry Email Logs */}
-      <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
-          Recent Pre-Expiry Email Logs
-        </h2>
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
-          <table className="w-full divide-y divide-slate-800 text-left text-xs">
-            <thead className="bg-slate-950/75 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              <tr>
-                <th className="px-3.5 py-2.5">Sent At</th>
-                <th className="px-3.5 py-2.5">Recipients</th>
-                <th className="px-3.5 py-2.5">Subject</th>
-                <th className="px-3.5 py-2.5">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/80 bg-slate-900/30">
-              {emailLogs.length === 0 ? (
+      {/* TAB 1: Government Permits Table */}
+      {activeTab === "PERMITS" && (
+        <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search permit #, name, agency, recipient email..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none sm:w-72"
+            />
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 sm:text-sm"
+              >
+                <option value="ALL">All Categories</option>
+                {CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 sm:text-sm"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="ACTIVE">ACTIVE</option>
+                <option value="EXPIRING_SOON">EXPIRING_SOON</option>
+                <option value="EXPIRED">EXPIRED</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-slate-800">
+            <table className="w-full divide-y divide-slate-800 text-left text-sm">
+              <thead className="bg-slate-950/75 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
                 <tr>
-                  <td
-                    colSpan={4}
-                    className="px-4 py-6 text-center text-slate-400"
-                  >
-                    No pre-expiry email logs yet.
-                  </td>
+                  <th className="px-3.5 py-3">Permit</th>
+                  <th className="px-3.5 py-3">Category</th>
+                  <th className="px-3.5 py-3">Expiry &amp; Lead Days</th>
+                  <th className="px-3.5 py-3">Recipient Email(s)</th>
+                  <th className="px-3.5 py-3">Status</th>
+                  <th className="px-3.5 py-3">Last Reminder</th>
                 </tr>
-              ) : (
-                emailLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-800/40">
-                    <td className="whitespace-nowrap px-3.5 py-2.5 text-slate-400">
-                      {new Date(log.sentAt).toLocaleString()}
-                    </td>
-                    <td className="px-3.5 py-2.5 text-slate-200">
-                      {log.recipients}
-                    </td>
-                    <td className="px-3.5 py-2.5 text-slate-300">
-                      {log.subject}
-                    </td>
-                    <td className="whitespace-nowrap px-3.5 py-2.5">
-                      <span
-                        className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
-                          log.status === "SENT"
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "bg-amber-500/15 text-amber-300"
-                        }`}
-                      >
-                        {log.status}
-                      </span>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80 bg-slate-900/30">
+                {loading ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-4 py-8 text-center text-slate-400"
+                    >
+                      Loading government permits...
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : filteredPermits.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-4 py-8 text-center text-slate-400"
+                    >
+                      No government permits found. Click &ldquo;+ Add
+                      Permit&rdquo; to create one.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredPermits.map((p) => {
+                    const daysLeft = getDaysRemaining(p.expiryDate);
+                    const perPermitRecipient = recipientByPermitId.get(p.id);
+                    return (
+                      <tr key={p.id} className="hover:bg-slate-800/40">
+                        <td className="px-3.5 py-3">
+                          <div className="font-semibold text-white">
+                            {p.permitName}
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            {p.permitNumber}
+                            {p.issuingAgency ? ` • ${p.issuingAgency}` : ""}
+                          </div>
+                        </td>
+                        <td className="whitespace-nowrap px-3.5 py-3">
+                          <span className="rounded bg-slate-800 px-2 py-0.5 font-mono text-xs text-slate-200">
+                            {p.category}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3.5 py-3 text-xs">
+                          <div className="text-slate-200">
+                            {toDateInputValue(p.expiryDate)} ({daysLeft}d)
+                          </div>
+                          <div className="text-slate-400">
+                            Alert {p.reminderLeadDays}d before expiry
+                          </div>
+                        </td>
+                        <td className="px-3.5 py-3 text-xs text-slate-200">
+                          {perPermitRecipient ? (
+                            <span>{perPermitRecipient}</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab("ROUTING_RULES")}
+                              className="text-sky-300 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-200"
+                            >
+                              Category/Terminal Rule
+                            </button>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3.5 py-3">
+                          <span
+                            className={`inline-flex rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
+                              STATUS_BADGES[p.status]
+                            }`}
+                          >
+                            {p.status}
+                          </span>
+                        </td>
+                        <td className="whitespace-nowrap px-3.5 py-3 text-xs text-slate-400">
+                          {p.lastReminderSent
+                            ? new Date(p.lastReminderSent).toLocaleString()
+                            : "Not sent yet"}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* TAB 2: Email Routing Rules Management */}
+      {activeTab === "ROUTING_RULES" && (
+        <EmailRoutingRulesPanel
+          terminals={terminals}
+          selectedTerminalId={activeTerminalId}
+          userRole={currentUserRole}
+        />
+      )}
+
+      {/* TAB 3: Recent Expiry Email Logs */}
+      {activeTab === "EMAIL_LOGS" && (
+        <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-white">
+                Pre-Expiry Email Audit Logs
+              </h2>
+              <p className="text-xs text-slate-400">
+                Delivery history for automated and manual permit expiry checks.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadPermitsData}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
+            >
+              Refresh Logs
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-slate-800">
+            <table className="w-full divide-y divide-slate-800 text-left text-xs">
+              <thead className="bg-slate-950/75 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <tr>
+                  <th className="px-3.5 py-2.5">Sent At</th>
+                  <th className="px-3.5 py-2.5">Recipients</th>
+                  <th className="px-3.5 py-2.5">Subject</th>
+                  <th className="px-3.5 py-2.5">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80 bg-slate-900/30">
+                {emailLogs.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={4}
+                      className="px-4 py-8 text-center text-slate-400"
+                    >
+                      No pre-expiry email logs yet.
+                    </td>
+                  </tr>
+                ) : (
+                  emailLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-slate-800/40">
+                      <td className="whitespace-nowrap px-3.5 py-2.5 text-slate-400">
+                        {new Date(log.sentAt).toLocaleString()}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-slate-200">
+                        {log.recipients}
+                      </td>
+                      <td className="px-3.5 py-2.5 text-slate-300">
+                        <div>{log.subject}</div>
+                        {log.errorMessage && (
+                          <div className="mt-0.5 text-[11px] text-rose-400">
+                            {log.errorMessage}
+                          </div>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-3.5 py-2.5">
+                        <span
+                          className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                            log.status === "SENT"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : log.status === "FAILED"
+                                ? "bg-rose-500/15 text-rose-300"
+                                : "bg-amber-500/15 text-amber-300"
+                          }`}
+                        >
+                          {log.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Add Permit Modal */}
       {isModalOpen && (
